@@ -135,7 +135,9 @@ pub fn connection_info_to_string(connection_info: ConnectionInfo) -> String {
   }
 }
 
-/// Tries to get the IP address and port of a connected client.
+/// Tries to get the IP address and port of a connected client. Connections
+/// over a Unix domain socket have no peer address, so this returns an error
+/// for them.
 pub fn get_connection_info(conn: Connection) -> Result(ConnectionInfo, Nil) {
   transport.peername(conn.transport, conn.socket)
   |> result.map(fn(pair) {
@@ -411,9 +413,11 @@ pub opaque type Builder(request_body, response_body) {
     port: Int,
     handler: fn(Request(request_body)) -> Response(response_body),
     after_start: fn(Int, Scheme, IpAddress) -> Nil,
+    after_start_unix: fn(String, Scheme) -> Nil,
     interface: String,
     ipv6_support: Bool,
     tls_options: Option(TlsOptions),
+    unix_socket: Option(String),
   )
 }
 
@@ -439,11 +443,21 @@ pub fn new(handler: fn(Request(in)) -> Response(out)) -> Builder(in, out) {
         <> int.to_string(port)
       io.println(message)
     },
+    after_start_unix: fn(path, scheme) {
+      let message =
+        "Listening on "
+        <> gleam_http.scheme_to_string(scheme)
+        <> " via Unix domain socket "
+        <> path
+      io.println(message)
+    },
     tls_options: None,
+    unix_socket: None,
   )
 }
 
-/// Assign a different listening port to the service.
+/// Assign a different listening port to the service. This has no effect when
+/// listening on a Unix domain socket (see `with_unix_socket`).
 pub fn port(builder: Builder(in, out), port: Int) -> Builder(in, out) {
   Builder(..builder, port: port)
 }
@@ -466,7 +480,8 @@ pub fn read_request_body(
 }
 
 /// Override the default function to be called after the service starts. The
-/// default is to log a message with the listening port.
+/// default is to log a message with the listening port. This is not called
+/// when listening on a Unix domain socket; see `after_start_unix` for that.
 pub fn after_start(
   builder: Builder(in, out),
   after_start: fn(Int, Scheme, IpAddress) -> Nil,
@@ -477,7 +492,8 @@ pub fn after_start(
 /// Specify an interface to listen on. This is a string that can have the
 /// following values: "localhost", a valid IPv4 address (i.e. "127.0.0.1"), or
 /// a valid IPv6 address (i.e. "::1"). An invalid value will cause the
-/// application to crash.
+/// application to crash. This has no effect when listening on a Unix domain
+/// socket (see `with_unix_socket`).
 pub fn bind(builder: Builder(in, out), interface: String) -> Builder(in, out) {
   Builder(..builder, interface: interface)
 }
@@ -486,9 +502,39 @@ pub fn bind(builder: Builder(in, out), interface: String) -> Builder(in, out) {
 /// IPv4 address to bind to, it will still only serve over IPv4. Calling this
 /// function will listen on both IPv4 and IPv6 for the given interface. If it is
 /// not supported, your application will crash. If you provide an IPv6 address
-/// to `mist.bind`, this function will have no effect.
+/// to `mist.bind`, this function will have no effect. It also has no effect
+/// when listening on a Unix domain socket (see `with_unix_socket`).
 pub fn with_ipv6(builder: Builder(in, out)) -> Builder(in, out) {
   Builder(..builder, ipv6_support: True)
+}
+
+/// Listen on a Unix domain socket at the given path instead of a TCP port.
+/// Any existing file at that path is removed before the socket is created,
+/// and the socket file is left behind when the server stops. On Linux, a path
+/// beginning with `@` uses the abstract socket namespace and creates no file.
+/// Unix domain sockets are only available on Unix-like systems; on Windows,
+/// starting the server fails.
+///
+/// When a Unix socket is configured, `port`, `bind`, and `with_ipv6` have no
+/// effect, and `after_start_unix` is called instead of `after_start`. TLS
+/// configured with `with_tls` still applies. Clients connected this way have
+/// no peer address, so `get_connection_info` returns an error for them.
+pub fn with_unix_socket(
+  builder: Builder(in, out),
+  path: String,
+) -> Builder(in, out) {
+  Builder(..builder, unix_socket: Some(path))
+}
+
+/// Override the default function to be called after the service starts when
+/// listening on a Unix domain socket (see `with_unix_socket`). It receives the
+/// socket path and the scheme. The default is to log a message with the socket
+/// path.
+pub fn after_start_unix(
+  builder: Builder(in, out),
+  after_start_unix: fn(String, Scheme) -> Nil,
+) -> Builder(in, out) {
+  Builder(..builder, after_start_unix: after_start_unix)
 }
 
 /// Use HTTPS with the provided certificate and key files.
@@ -538,36 +584,56 @@ pub fn start(
   supervisor.new(strategy: supervisor.OneForOne)
   |> supervisor.add(
     supervision.supervisor(fn() {
-      fn(req) { convert_body_types(builder.handler(req)) }
-      |> handler.with_func(factory_name)
-      |> glisten.new(handler.init, _)
-      |> glisten.bind(builder.interface)
-      |> fn(handler) {
-        case builder.ipv6_support {
-          True -> glisten.with_ipv6(handler)
-          False -> handler
-        }
+      let scheme = case builder.tls_options {
+        Some(_) -> Https
+        None -> Http
       }
-      |> fn(handler) {
-        case builder.tls_options {
-          Some(CertKeyFiles(certfile, keyfile)) ->
-            handler
-            |> glisten.with_tls(certfile, keyfile)
-          _ -> handler
+
+      let handler =
+        fn(req) { convert_body_types(builder.handler(req)) }
+        |> handler.with_func(factory_name)
+        |> glisten.new(handler.init, _)
+        |> fn(handler) {
+          case builder.tls_options {
+            Some(CertKeyFiles(certfile, keyfile)) ->
+              glisten.with_tls(handler, certfile, keyfile)
+            None -> handler
+          }
         }
+        |> glisten.with_listener_name(listener_name)
+
+      case builder.unix_socket {
+        Some(path) ->
+          handler
+          |> glisten.start_unix(path)
+          |> result.map(fn(server) {
+            builder.after_start_unix(path, scheme)
+            server
+          })
+        None ->
+          handler
+          |> glisten.bind(builder.interface)
+          |> fn(handler) {
+            case builder.ipv6_support {
+              True -> glisten.with_ipv6(handler)
+              False -> handler
+            }
+          }
+          |> glisten.start(builder.port)
+          |> result.map(fn(server) {
+            case glisten.get_server_info(listener_name, 5000) {
+              glisten.TcpServerInfo(port:, ip_address:) ->
+                builder.after_start(
+                  port,
+                  scheme,
+                  to_mist_ip_address(ip_address),
+                )
+              // A TCP listener never reports a Unix socket name.
+              glisten.UnixServerInfo(_) -> Nil
+            }
+            server
+          })
       }
-      |> glisten.with_listener_name(listener_name)
-      |> glisten.start(builder.port)
-      |> result.map(fn(server) {
-        let info = glisten.get_server_info(listener_name, 5000)
-        let ip_address = to_mist_ip_address(info.ip_address)
-        let scheme = case option.is_some(builder.tls_options) {
-          True -> Https
-          False -> Http
-        }
-        builder.after_start(info.port, scheme, ip_address)
-        server
-      })
     }),
   )
   |> supervisor.add(

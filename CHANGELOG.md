@@ -1,5 +1,10 @@
 # Changelog
 
+# Unreleased
+
+- Support listening on a Unix domain socket with `with_unix_socket` and
+`after_start_unix`
+
 # v6.0.3
 
 - Continue handling frames after receiving `Ping`
