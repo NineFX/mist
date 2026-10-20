@@ -104,7 +104,7 @@ pub fn it_rejects_large_requests_test() {
   string_response_should_equal(resp, expected)
 }
 
-@external(erlang, "hackney_ffi", "stream_request")
+@external(erlang, "mist_test_ffi", "stream_request")
 fn stream_request(
   method method: http.Method,
   path path: String,

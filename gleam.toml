@@ -16,7 +16,9 @@ gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 hpack_erl = ">= 0.3.0 and < 1.0.0"
 logging = ">= 1.0.0 and < 2.0.0"
-glisten = ">= 9.0.0 and < 10.0.0"
+# Unix domain socket support is not yet released on Hex; pin glisten main
+# until a release that includes `glisten.start_unix` is published.
+glisten = { git = "https://github.com/rawhat/glisten.git", ref = "930b772c98958ac4a4d139da5ce9b48b74887016" }
 exception = ">= 2.1.0 and < 3.0.0"
 gramps = ">= 6.0.0 and < 7.0.0"
 gleam_otp = ">= 1.2.0 and < 2.0.0"

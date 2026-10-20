@@ -88,12 +88,12 @@ pub fn open_server(
   case exception.rescue(perform) {
     Ok(return) -> {
       process.kill(pid)
-      exit(chunked_response_supervisor, atom.create("shutdown"))
+      shutdown(chunked_response_supervisor)
       return
     }
     Error(err) -> {
       process.kill(pid)
-      exit(chunked_response_supervisor, atom.create("shutdown"))
+      shutdown(chunked_response_supervisor)
       panic as { "Handler failed with: " <> string.inspect(err) }
     }
   }
@@ -282,6 +282,12 @@ fn io_fwrite(
 
 pub fn io_fwrite_user(data: anything) {
   io_fwrite(User, "~tp\n", [data])
+}
+
+/// Stops a supervisor the way its parent would, so it shuts its children down
+/// in order instead of logging crash reports.
+pub fn shutdown(pid: process.Pid) -> Nil {
+  exit(pid, atom.create("shutdown"))
 }
 
 @external(erlang, "erlang", "exit")

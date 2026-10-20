@@ -231,3 +231,27 @@ fn guess_content_type(_path: String) -> String {
   "application/octet-stream"
 }
 ```
+
+## Listening on a Unix domain socket
+
+Instead of a TCP port, `mist` can listen on a Unix domain socket. Any existing
+file at the path is removed before the socket is created. On Linux, a path
+beginning with `@` uses the abstract socket namespace and creates no file.
+
+```gleam
+let assert Ok(_) =
+  handler
+  |> mist.new
+  |> mist.with_unix_socket("/tmp/my_app.sock")
+  |> mist.start
+```
+
+`mist.port`, `mist.bind`, and `mist.with_ipv6` have no effect when a Unix socket
+is configured, and `mist.after_start_unix` is called instead of
+`mist.after_start`. TLS configured with `mist.with_tls` still applies. Clients
+connected over a Unix socket have no peer address, so
+`mist.get_connection_info` returns an error for them.
+
+```sh
+$ curl --unix-socket /tmp/my_app.sock http://localhost/
+```
